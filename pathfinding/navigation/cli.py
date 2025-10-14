@@ -2,12 +2,17 @@
 Navigation CLI: User interface for pathfinding
 """
 import importlib
+import traceback
 
-try:
-    sense_mod = importlib.import_module('pathfinding.display.led')
-    SenseAvailable = True
-except Exception:
-    SenseAvailable = False
+# Preferred import strategy: try both package and module import paths and surface errors for debugging
+SenseModule = None
+SenseImportError = None
+for module_name in ("display.led", "pathfinding.display.led", "pathfinding.display.led"):  # try common names
+    try:
+        SenseModule = importlib.import_module(module_name)
+        break
+    except Exception as e:
+        SenseImportError = e
 
 from db.graph_db import GraphDB
 from display.led_matrix import LEDMatrix
@@ -19,13 +24,27 @@ class NavigationSystem:
     def __init__(self):
         print("Initializing navigation system...")
         self.graph = GraphDB()
-        if SenseAvailable:
-            from display.led import DirectionDisplay
-            self.display = DirectionDisplay()
+        self.voice = None
+
+        if SenseModule is not None:
+            try:
+                DirectionDisplay = getattr(SenseModule, 'DirectionDisplay')
+                self.display = DirectionDisplay()
+                print("Using Sense HAT DirectionDisplay for output.")
+            except Exception as e:
+                self.display = LEDMatrix()
+                print("Failed to initialize Sense HAT display, falling back to LEDMatrix emulator.")
+                print("Sense HAT init error:")
+                traceback.print_exception(type(e), e, e.__traceback__)
         else:
             self.display = LEDMatrix()
-        self.voice = None
+            print("Sense HAT display module not found; using LEDMatrix emulator.")
+            if SenseImportError is not None:
+                print("Last import error:")
+                traceback.print_exception(type(SenseImportError), SenseImportError, SenseImportError.__traceback__)
+
         print(f"Ready. {len(self.graph.nodes)} nodes, {sum(len(adj) for adj in self.graph.adjacency)} connections")
+
     def run(self):
         while True:
             print("\n1. Navigate")
@@ -41,6 +60,7 @@ class NavigationSystem:
                 self._voice_navigate()
             elif choice == "4":
                 break
+
     def _navigate(self):
         start = input("Start room: ").strip()
         end = input("End room: ").strip()
@@ -57,15 +77,20 @@ class NavigationSystem:
         print(f"Steps: {len(result['instructions'])}")
         if input("\nStart navigation? (y/N): ").lower() == 'y':
             self._step_navigation(result["instructions"])
+
     def _step_navigation(self, instructions):
         for i, instruction in enumerate(instructions):
             print(f"\nStep {i+1}/{len(instructions)}")
             print(f"Instruction: {instruction['instruction']}")
             print(f"Distance: {instruction['distance']}m")
-            self.display.display_step(instruction)
+            try:
+                self.display.display_step(instruction)
+            except Exception as e:
+                print("Display error:", e)
             if input("\nPress ENTER (q to quit): ").lower() == 'q':
                 break
         print("\nNavigation complete!")
+
     def _list_rooms(self):
         rooms = [(n.code, n.name, n.building, n.floor) for n in self.graph.nodes if n.node_type == "room"]
         for building in sorted(set(r[2] for r in rooms)):
@@ -73,6 +98,7 @@ class NavigationSystem:
             building_rooms = [r for r in rooms if r[2] == building]
             for code, name, _, floor in sorted(building_rooms):
                 print(f"  {code}: {name} (Floor {floor})")
+
     def _voice_navigate(self):
         if self.voice is None:
             try:
@@ -81,7 +107,7 @@ class NavigationSystem:
                 print(f"Voice model error: {e}")
                 return
         text = self.voice.listen()
-        start, end = extract_rooms_from_text(text)
+        start, end = extract_rooms_from_text(text, self.graph)
         if not start or not end:
             print("Could not extract room numbers. Please say: 'guide me from room 1 to room 2'")
             return
@@ -96,6 +122,7 @@ class NavigationSystem:
         print(f"Steps: {len(result['instructions'])}")
         if input("\nStart navigation? (y/N): ").lower() == 'y':
             self._step_navigation(result["instructions"])
+
 
 def main():
     nav = NavigationSystem()
